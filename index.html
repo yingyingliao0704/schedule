@@ -430,6 +430,43 @@ a { color: var(--accent); }
 }
 .day-pick button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 
+/* 搜索弹窗 */
+.search-bar { display: flex; gap: 10px; align-items: center; }
+.search-bar .icon { width: 17px; height: 17px; color: var(--text-3); flex: none; }
+.search-input {
+  flex: 1;
+  height: 40px; padding: 0 12px;
+  border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface); color: var(--text); font-size: 14px; outline: none;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.search-results { margin-top: 14px; max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.search-empty {
+  padding: 30px 16px; text-align: center; color: var(--text-3); font-size: 13px; line-height: 1.8;
+}
+.sr-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
+}
+.sr-item:hover { border-color: var(--accent); box-shadow: var(--shadow); transform: translateY(-1px); }
+.sr-bar { width: 4px; align-self: stretch; border-radius: 2px; flex: none; }
+.sr-main { flex: 1; min-width: 0; }
+.sr-name { font-size: 13.5px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sr-meta { font-size: 11.5px; color: var(--text-2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sr-tags { display: flex; gap: 5px; flex: none; align-items: center; }
+.sr-tag {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
+  background: var(--accent-soft); color: var(--accent); white-space: nowrap;
+}
+.sr-tag.gray { background: var(--surface-3); color: var(--text-2); }
+.sr-go { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); color: var(--text-2); flex: none; }
+.sr-item:hover .sr-go { background: var(--accent); color: var(--accent-text); }
+
 /* 颜色选择 */
 .color-pick { display: flex; flex-wrap: wrap; gap: 7px; }
 .color-pick button {
@@ -657,6 +694,9 @@ a { color: var(--accent); }
     <button class="btn btn-primary" id="addCourseBtn">
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
       添加课程
+    </button>
+    <button class="btn btn-icon" id="searchBtn" title="查找课程 / 某天的课程" aria-label="查找">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.5-4.5"/></svg>
     </button>
     <button class="btn btn-icon" id="activityBtn" title="活动与提醒" aria-label="活动与提醒">
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v15a2 2 0 0 0 2 2h12"/><path d="M8 4h8v5l-2.5 1.6L11 9V4"/><path d="M9 12h6M9 15h6M9 18h3"/></svg>
@@ -934,6 +974,40 @@ a { color: var(--accent); }
 <div id="toastBox" class="toast-box" aria-live="polite"></div>
 <div id="printArea" aria-hidden="true"></div>
 <input type="file" id="importFile" accept=".json,application/json" hidden>
+
+<!-- ===== 查找弹窗 ===== -->
+<div class="modal-overlay" id="searchModal" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="searchTitle">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:17px;height:17px;vertical-align:-3px;margin-right:6px"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.5-4.5"/></svg>
+        查找课程
+      </h2>
+      <button class="modal-close" data-close="searchModal" aria-label="关闭">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="search-bar">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.5-4.5"/></svg>
+        <input type="text" id="searchInput" class="search-input" placeholder="输入课程名称 / 教师 / 教室，如：程序设计、薛海燕、信息楼">
+      </div>
+      <div class="field" style="margin-top:13px">
+        <label>按星期几筛选（可选）</label>
+        <div class="day-pick" id="searchDayPick">
+          <button data-day="0" class="active">全部</button>
+          <button data-day="1">周一</button>
+          <button data-day="2">周二</button>
+          <button data-day="3">周三</button>
+          <button data-day="4">周四</button>
+          <button data-day="5">周五</button>
+          <button data-day="6">周六</button>
+        </div>
+      </div>
+      <div id="searchResults" class="search-results"></div>
+    </div>
+  </div>
+</div>
 
 <script>
 'use strict';
@@ -1624,6 +1698,76 @@ document.querySelectorAll('#viewSwitch button').forEach(b => b.addEventListener(
   render();
 }));
 $('addCourseBtn').addEventListener('click', () => openCourseModal());
+
+/* --- 查找课程 --- */
+let searchDayFilter = 0;
+function openSearchModal() {
+  searchDayFilter = 0;
+  $('searchInput').value = '';
+  document.querySelectorAll('#searchDayPick button').forEach(b => b.classList.toggle('active', b.dataset.day === '0'));
+  renderSearchResults();
+  openModal('searchModal');
+  setTimeout(() => $('searchInput').focus(), 60);
+}
+function renderSearchResults() {
+  const q = $('searchInput').value.trim().toLowerCase();
+  const box = $('searchResults');
+  if (!q && !searchDayFilter) {
+    box.innerHTML = '<div class="search-empty">输入课程名称、教师或教室开始查找；<br>也可以选择某个星期，查看当天的全部课程。</div>';
+    return;
+  }
+  const list = state.courses.filter(c => {
+    if (searchDayFilter && c.weekday !== searchDayFilter) return false;
+    if (!q) return true;
+    return (c.name + ' ' + (c.teacher || '') + ' ' + (c.room || '')).toLowerCase().includes(q);
+  });
+  if (!list.length) {
+    box.innerHTML = '<div class="search-empty">没有找到匹配的课程，换个关键词试试。</div>';
+    return;
+  }
+  const { periods } = getDerived();
+  let html = '';
+  [...list].sort((a, b) => a.weekday - b.weekday || a.startPeriod - b.startPeriod).forEach(c => {
+    const tcol = textColorFor(c.color);
+    html += '<div class="sr-item" data-sid="' + c.id + '">' +
+      '<span class="sr-bar" style="background:' + c.color + '"></span>' +
+      '<div class="sr-main">' +
+      '<div class="sr-name">' + esc(c.name) + '</div>' +
+      '<div class="sr-meta">' + DAY_LABEL[c.weekday] + ' · 第 ' + c.startPeriod + (c.endPeriod !== c.startPeriod ? '-' + c.endPeriod : '') + ' 节 · ' + courseTimeText(c, periods) +
+      (c.teacher ? ' · ' + esc(c.teacher) : '') + (c.room ? ' · ' + esc(c.room) : '') + '</div>' +
+      '</div>' +
+      '<div class="sr-tags">' +
+      (weekTypeLabel(c) ? '<span class="sr-tag gray">' + esc(weekTypeLabel(c)) + '周</span>' : '') +
+      '</div>' +
+      '<span class="sr-go"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M9 5l7 7-7 7"/></svg></span>' +
+      '</div>';
+  });
+  box.innerHTML = html;
+  box.querySelectorAll('.sr-item').forEach(el => el.addEventListener('click', () => {
+    const c = state.courses.find(x => x.id === el.dataset.sid);
+    if (!c) return;
+    // 跳到该课程上课周次中的第一周（若为单周/双周/每周则取最近的有效周）
+    const weeks = c.weekType === 'custom' ? [...parseWeeks(c.customWeeks)].sort((a, b) => a - b)
+      : c.weekType === 'odd' ? [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
+      : c.weekType === 'even' ? [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+      : Array.from({ length: state.semester.totalWeeks }, (_, i) => i + 1);
+    const nowWk = autoCurrentWeek();
+    let target = weeks.find(w => w >= nowWk) || weeks[0] || nowWk;
+    target = Math.max(1, Math.min(target, state.semester.totalWeeks));
+    currentWeek = target;
+    viewMode = 'week';
+    closeModal('searchModal');
+    render();
+    toast('已定位到第 ' + currentWeek + ' 周');
+  }));
+}
+$('searchBtn').addEventListener('click', openSearchModal);
+$('searchInput').addEventListener('input', renderSearchResults);
+document.querySelectorAll('#searchDayPick button').forEach(b => b.addEventListener('click', () => {
+  searchDayFilter = +b.dataset.day;
+  document.querySelectorAll('#searchDayPick button').forEach(x => x.classList.toggle('active', x === b));
+  renderSearchResults();
+}));
 
 /* --- 点击课程 / 今日项 / 列表项 → 编辑 --- */
 document.addEventListener('click', e => {
