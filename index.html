@@ -1002,7 +1002,16 @@ a { color: var(--accent); }
           <button data-day="4">周四</button>
           <button data-day="5">周五</button>
           <button data-day="6">周六</button>
+          <button data-day="7">周日</button>
         </div>
+      </div>
+      <div class="field" style="margin-top:13px">
+        <label>按具体日期查找（可选）</label>
+        <div class="search-bar">
+          <input type="date" id="searchDate" class="search-input" style="flex:1;height:38px;color-scheme:light">
+          <button class="btn btn-sm" id="searchDateClear" type="button">清除日期</button>
+        </div>
+        <div class="field-hint">选择日期后，自动定位到该日期所在的周，列出当天实际上课的课程。</div>
       </div>
       <div id="searchResults" class="search-results"></div>
     </div>
@@ -1701,9 +1710,12 @@ $('addCourseBtn').addEventListener('click', () => openCourseModal());
 
 /* --- 查找课程 --- */
 let searchDayFilter = 0;
+let searchDateVal = '';
 function openSearchModal() {
   searchDayFilter = 0;
+  searchDateVal = '';
   $('searchInput').value = '';
+  $('searchDate').value = '';
   document.querySelectorAll('#searchDayPick button').forEach(b => b.classList.toggle('active', b.dataset.day === '0'));
   renderSearchResults();
   openModal('searchModal');
@@ -1712,24 +1724,51 @@ function openSearchModal() {
 function renderSearchResults() {
   const q = $('searchInput').value.trim().toLowerCase();
   const box = $('searchResults');
-  if (!q && !searchDayFilter) {
-    box.innerHTML = '<div class="search-empty">输入课程名称、教师或教室开始查找；<br>也可以选择某个星期，查看当天的全部课程。</div>';
+  const hasDate = !!searchDateVal;
+
+  // 日期 → 周次与星期几
+  let dateWeek = 0, dateWeekday = 0, dateInfo = '';
+  if (hasDate) {
+    const d = parseDate(searchDateVal);
+    const start = parseDate(state.semester.startDate);
+    const diffDays = Math.round((d - start) / 86400000);
+    dateWeek = Math.floor(diffDays / 7) + 1;
+    dateWeekday = d.getDay() === 0 ? 7 : d.getDay();
+    dateInfo = '第 ' + dateWeek + ' 周 · ' + DAY_LABEL[dateWeekday] + ' ' + searchDateVal;
+    // 日期越界提示
+    if (dateWeek < 1 || dateWeek > state.semester.totalWeeks) {
+      box.innerHTML = '<div class="search-empty">所选日期不在本学期（共 ' + state.semester.totalWeeks + ' 周）范围内，<br>本学期为 ' + state.semester.startDate + ' 开学。请选择其他日期。</div>';
+      return;
+    }
+  }
+
+  if (!q && !searchDayFilter && !hasDate) {
+    box.innerHTML = '<div class="search-empty">输入课程名称、教师或教室开始查找；<br>也可以选择星期几或具体日期，查看当天的全部课程。</div>';
     return;
   }
+
   const list = state.courses.filter(c => {
-    if (searchDayFilter && c.weekday !== searchDayFilter) return false;
+    // 有日期：严格按"该日期所在周 + 当天星期"匹配实际上课
+    if (hasDate) {
+      if (c.weekday !== dateWeekday) return false;
+      if (!weekMatch(c, dateWeek)) return false;
+    } else if (searchDayFilter && c.weekday !== searchDayFilter) {
+      return false;
+    }
     if (!q) return true;
     return (c.name + ' ' + (c.teacher || '') + ' ' + (c.room || '')).toLowerCase().includes(q);
   });
   if (!list.length) {
-    box.innerHTML = '<div class="search-empty">没有找到匹配的课程，换个关键词试试。</div>';
+    box.innerHTML = hasDate
+      ? '<div class="search-empty">' + dateInfo + ' 当天没有安排课程，好好休息或去图书馆吧。</div>'
+      : '<div class="search-empty">没有找到匹配的课程，换个关键词试试。</div>';
     return;
   }
   const { periods } = getDerived();
-  let html = '';
+  let html = (hasDate ? '<div class="field-hint" style="margin-bottom:8px">' + dateInfo + '</div>' : '');
   [...list].sort((a, b) => a.weekday - b.weekday || a.startPeriod - b.startPeriod).forEach(c => {
     const tcol = textColorFor(c.color);
-    html += '<div class="sr-item" data-sid="' + c.id + '">' +
+    html += '<div class="sr-item" data-sid="' + c.id + '"' + (hasDate ? ' data-week="' + dateWeek + '"' : '') + '>' +
       '<span class="sr-bar" style="background:' + c.color + '"></span>' +
       '<div class="sr-main">' +
       '<div class="sr-name">' + esc(c.name) + '</div>' +
@@ -1737,7 +1776,7 @@ function renderSearchResults() {
       (c.teacher ? ' · ' + esc(c.teacher) : '') + (c.room ? ' · ' + esc(c.room) : '') + '</div>' +
       '</div>' +
       '<div class="sr-tags">' +
-      (weekTypeLabel(c) ? '<span class="sr-tag gray">' + esc(weekTypeLabel(c)) + '周</span>' : '') +
+      (hasDate ? '<span class="sr-tag">' + esc(weekTypeLabel(c) || '本周') + '</span>' : (weekTypeLabel(c) ? '<span class="sr-tag gray">' + esc(weekTypeLabel(c)) + '周</span>' : '')) +
       '</div>' +
       '<span class="sr-go"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M9 5l7 7-7 7"/></svg></span>' +
       '</div>';
@@ -1746,13 +1785,18 @@ function renderSearchResults() {
   box.querySelectorAll('.sr-item').forEach(el => el.addEventListener('click', () => {
     const c = state.courses.find(x => x.id === el.dataset.sid);
     if (!c) return;
-    // 跳到该课程上课周次中的第一周（若为单周/双周/每周则取最近的有效周）
-    const weeks = c.weekType === 'custom' ? [...parseWeeks(c.customWeeks)].sort((a, b) => a - b)
-      : c.weekType === 'odd' ? [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
-      : c.weekType === 'even' ? [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
-      : Array.from({ length: state.semester.totalWeeks }, (_, i) => i + 1);
-    const nowWk = autoCurrentWeek();
-    let target = weeks.find(w => w >= nowWk) || weeks[0] || nowWk;
+    // 按日期查找：直接跳到该日期所在周；否则跳到课程上课周次中最近的周
+    let target;
+    if (el.dataset.week) {
+      target = +el.dataset.week;
+    } else {
+      const weeks = c.weekType === 'custom' ? [...parseWeeks(c.customWeeks)].sort((a, b) => a - b)
+        : c.weekType === 'odd' ? [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
+        : c.weekType === 'even' ? [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+        : Array.from({ length: state.semester.totalWeeks }, (_, i) => i + 1);
+      const nowWk = autoCurrentWeek();
+      target = weeks.find(w => w >= nowWk) || weeks[0] || nowWk;
+    }
     target = Math.max(1, Math.min(target, state.semester.totalWeeks));
     currentWeek = target;
     viewMode = 'week';
@@ -1768,6 +1812,15 @@ document.querySelectorAll('#searchDayPick button').forEach(b => b.addEventListen
   document.querySelectorAll('#searchDayPick button').forEach(x => x.classList.toggle('active', x === b));
   renderSearchResults();
 }));
+$('searchDate').addEventListener('change', e => {
+  searchDateVal = e.target.value || '';
+  renderSearchResults();
+});
+$('searchDateClear').addEventListener('click', () => {
+  searchDateVal = '';
+  $('searchDate').value = '';
+  renderSearchResults();
+});
 
 /* --- 点击课程 / 今日项 / 列表项 → 编辑 --- */
 document.addEventListener('click', e => {
