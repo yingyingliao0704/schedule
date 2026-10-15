@@ -641,6 +641,23 @@ a { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ============ 页面内提醒横幅（不依赖系统通知权限，后台切回也能看到） ============ */
+.notify-alert {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 999; max-width: min(92vw, 460px); width: max-content;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px;
+  background: var(--danger); color: #fff;
+  border-radius: 12px; box-shadow: var(--shadow-lg);
+  font-size: 14px; line-height: 1.45;
+  opacity: 1; transition: opacity .3s ease, transform .3s ease;
+  cursor: pointer;
+}
+.notify-alert.out { opacity: 0; transform: translateX(-50%) translateY(-10px); pointer-events: none; }
+.notify-alert b { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.notify-alert span { color: rgba(255,255,255,.94); }
+.notify-alert .na-close { font-style: normal; font-size: 18px; opacity: .85; line-height: 1; margin-left: 2px; }
 </style>
 </head>
 <body>
@@ -1675,6 +1692,7 @@ $('cfSaveBtn').addEventListener('click', () => {
   if (editingCourseId) {
     const c = state.courses.find(x => x.id === editingCourseId);
     if (c) Object.assign(c, data);
+    if (c) clearCourseNotify(c); /* 改了课程时间/提醒，重新武装提醒 */
     toast('课程已更新');
   } else {
     state.courses.push(Object.assign({ id: uid() }, data));
@@ -1687,6 +1705,7 @@ $('cfDeleteBtn').addEventListener('click', () => {
   if (!editingCourseId) return;
   const c = state.courses.find(x => x.id === editingCourseId);
   if (c && confirm('确定删除课程「' + c.name + '」吗？')) {
+    clearCourseNotify(c);
     state.courses = state.courses.filter(x => x.id !== editingCourseId);
     toast('课程已删除');
     closeModal('courseModal');
@@ -1976,6 +1995,7 @@ $('sfSaveBtn').addEventListener('click', () => {
   }
   state.sessionsStr = $('sfSessions').value.trim() || '1-4:上午;5-10:下午;11-12:晚上';
   state.remindMin = Math.max(0, Math.min(+$('sfRemind').value || 60, 180));
+  clearTodayPreReminders();
   state.showSelfStudy = $('sfSelfStudy').checked;
   currentWeek = Math.max(1, Math.min(currentWeek, total));
   closeModal('settingsModal');
@@ -1993,41 +2013,169 @@ $('autoLocateBtn').addEventListener('click', () => {
 });
 
 /* ============================================================
-   浏览器通知与上课提醒
+   浏览器通知与上课提醒（增强版）
+   ------------------------------------------------------------
+   两层提醒，双保险：
+   ① 页面内提醒（顶部横幅 + 提示音 + 标题闪烁 + 手机震动）
+      —— 不依赖系统通知权限，任何浏览器（含 iOS Safari）都能用；
+   ② 系统浏览器通知（桌面 / 安卓，需用户授权）—— 强化可感知度。
+   只要标签页保持打开（含后台标签页），到点即提醒。
    ============================================================ */
 function notifySupported() { return typeof Notification !== 'undefined'; }
 function requestNotifyPermission() {
-  if (!notifySupported()) { toast('当前浏览器不支持通知', 'warn'); return; }
+  if (!notifySupported()) { toast('当前浏览器不支持系统通知，已自动改用页面内提醒', 'warn'); return; }
   Notification.requestPermission().then(p => {
     renderNotifyStatus();
-    if (p === 'granted') toast('浏览器通知已开启');
-    else if (p === 'denied') toast('通知权限被拒绝，可在浏览器设置中重新允许', 'warn');
+    if (p === 'granted') toast('系统通知已开启（另含页面内横幅、铃声与标题闪烁）');
+    else if (p === 'denied') toast('系统通知被拒绝，将改用页面内提醒', 'warn');
   });
 }
 function renderNotifyStatus() {
   const box = $('notifyBox');
   if (!box) return;
   let cls = '', text = '';
-  if (!notifySupported()) { text = '当前浏览器不支持通知'; }
-  else if (Notification.permission === 'granted') { cls = ' granted'; text = '浏览器通知已开启，课程与活动将提前 1 小时提醒'; }
-  else if (Notification.permission === 'denied') { cls = ' denied'; text = '通知被拒绝，请在浏览器设置中允许本站通知'; }
-  else { text = '尚未开启浏览器通知'; }
+  if (!notifySupported()) { text = '当前浏览器不支持系统通知，已启用页面内提醒'; }
+  else if (Notification.permission === 'granted') { cls = ' granted'; text = '系统通知已开启（另含页面内横幅、铃声与标题闪烁）'; }
+  else if (Notification.permission === 'denied') { cls = ' denied'; text = '系统通知被拒绝，已改用页面内提醒（横幅+铃声）'; }
+  else { text = '页面内提醒已就绪，可再开启系统通知'; }
   box.className = 'notify-status' + cls;
   box.innerHTML = '<span class="dot"></span><span style="flex:1">' + text + '</span>' +
     (notifySupported() && Notification.permission !== 'granted' ?
-      '<button class="btn btn-sm btn-primary" id="notifyOpenBtn">开启通知</button>' : '');
+      '<button class="btn btn-sm btn-primary" id="notifyOpenBtn">开启系统通知</button>' : '');
   const b = $('notifyOpenBtn');
   if (b) b.addEventListener('click', requestNotifyPermission);
 }
-function pushNotify(title, body, tag) {
+
+/* --- 提示音：用 WebAudio 合成，无需音频文件，后台也能响 --- */
+let _beepCtx = null;
+function playBeep() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    _beepCtx = _beepCtx || new AC();
+    if (_beepCtx.state === 'suspended') _beepCtx.resume();
+    [0, 250, 520].forEach(dt => {
+      const t = _beepCtx.currentTime + dt / 1000;
+      const o = _beepCtx.createOscillator();
+      const g = _beepCtx.createGain();
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.28, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      o.connect(g); g.connect(_beepCtx.destination);
+      o.start(t); o.stop(t + 0.24);
+    });
+  } catch (e) { /* 声音不可用则忽略 */ }
+}
+function vibrateMobile() { try { if (navigator.vibrate) navigator.vibrate([220, 120, 220]); } catch (e) {} }
+
+/* --- 标题 + favicon 闪烁：切后台也能一眼看到提醒 --- */
+let _titleFlash = null;
+function flashTitle(text) {
+  const orig = document.title;
+  const icon = document.querySelector('link[rel="icon"]');
+  const oldHref = icon ? icon.getAttribute('href') : null;
+  let on = false;
+  if (_titleFlash) clearInterval(_titleFlash);
+  _titleFlash = setInterval(() => {
+    on = !on;
+    document.title = on ? text : orig;
+    if (icon && oldHref) icon.setAttribute('href', on
+      ? 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="6" y="10" width="52" height="46" rx="10" fill="#C2564A"/><text x="32" y="46" font-size="32" text-anchor="middle" fill="#fff">!</text></svg>')
+      : oldHref);
+  }, 700);
+  setTimeout(() => { if (_titleFlash) { clearInterval(_titleFlash); _titleFlash = null; } if (icon && oldHref) icon.setAttribute('href', oldHref); }, 15000);
+}
+
+/* --- 页面内提醒横幅（可点击关闭，自动淡出） --- */
+function showAlertBanner(title, body) {
+  let b = document.getElementById('notifyAlert');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'notifyAlert';
+    b.className = 'notify-alert';
+    document.body.appendChild(b);
+    b.addEventListener('click', () => b.classList.add('out'));
+  }
+  b.innerHTML = '<b>' + esc(title) + '</b><span>' + esc(body) + '</span><i class="na-close">&times;</i>';
+  b.classList.remove('out');
+  clearTimeout(b._timer);
+  b._timer = setTimeout(() => b.classList.add('out'), 30000);
+}
+
+function pushNotify(title, body) {
+  showAlertBanner(title, body);
+  playBeep();
+  vibrateMobile();
+  flashTitle('⏰ ' + title);
   toast(title + '：' + body);
   if (notifySupported() && Notification.permission === 'granted') {
     try {
-      const n = new Notification(title, { body, tag, icon: location.href.replace(/#.*$/, '') });
-      setTimeout(() => n.close(), 30000);
+      const n = new Notification(title, { body, tag: title + body, icon: location.href.replace(/#.*$/, '') });
+      n.onclick = () => { window.focus(); try { n.close(); } catch (e) {} };
+      setTimeout(() => { try { n.close(); } catch (e) {} }, 30000);
     } catch (e) { /* 忽略 */ }
   }
 }
+
+/* --- 清理已提醒记录：改动课程/活动/设置后重新武装，避免“改了不生效” --- */
+function clearCourseNotify(c) {
+  const tKey = todayKey();
+  let ch = false;
+  [':pre', ':start'].forEach(sfx => {
+    const k = tKey + ':' + c.id + sfx;
+    if (notified.has(k)) { notified.delete(k); ch = true; }
+  });
+  if (ch) save();
+}
+function clearActivityNotify(a) {
+  const k = todayKey() + ':' + a.id + ':act';
+  if (notified.has(k)) { notified.delete(k); save(); }
+}
+/* 设置（如提前提醒分钟数）变化后，清空今天的提前提醒标记，按新值生效 */
+function clearTodayPreReminders() {
+  const tKey = todayKey();
+  let ch = false;
+  notified.forEach(k => { if (k.startsWith(tKey + ':') && k.endsWith(':pre')) { notified.delete(k); ch = true; } });
+  if (ch) save();
+}
+
+/* --- 精确触发：算好下一个提醒时刻，用 setTimeout 掐点唤醒（不再只靠轮询） --- */
+function msUntil(hour, min) {
+  const now = new Date();
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, min, 0, 0);
+  return target.getTime() - now.getTime();
+}
+let _nextTimer = null;
+function scheduleNext() {
+  if (_nextTimer) { clearTimeout(_nextTimer); _nextTimer = null; }
+  const now = new Date();
+  const wd = todayWeekday();
+  const tKey = todayKey();
+  const curMin = now.getHours() * 60 + now.getMinutes();
+  const wk = autoCurrentWeek();
+  const { periods } = getDerived();
+  const targets = [];
+  const consider = min => { targets.push(min); };
+  state.courses.forEach(c => {
+    if (c.weekday !== wd || !weekMatch(c, wk)) return;
+    const stMin = toMin(courseStartText(c, periods));
+    if (!notified.has(tKey + ':' + c.id + ':pre')) consider(stMin - state.remindMin);
+    if (!notified.has(tKey + ':' + c.id + ':start')) consider(stMin);
+  });
+  state.activities.forEach(a => {
+    if (a.date !== tKey || a.done || !a.remind) return;
+    if (!notified.has(tKey + ':' + a.id + ':act')) consider(toMin(a.time || '00:00') - state.remindMin);
+  });
+  let nextMin = null;
+  targets.forEach(m => { if (m >= curMin && (nextMin === null || m < nextMin)) nextMin = m; });
+  if (nextMin === null) { _nextTimer = setTimeout(() => tick(), 60000); return; } // 兜底心跳
+  let delay = msUntil(Math.floor(nextMin / 60), nextMin % 60);
+  if (delay < 0) delay = 0;
+  _nextTimer = setTimeout(() => tick(), delay + 60);
+}
+
+/* --- 提醒主流程（含补检 + 精确调度） --- */
 function tick() {
   const now = new Date();
   const wd = todayWeekday();
@@ -2036,6 +2184,7 @@ function tick() {
   const wk = autoCurrentWeek();
   const { periods } = getDerived();
 
+  let fired = false;
   state.courses.forEach(c => {
     if (c.weekday !== wd || !weekMatch(c, wk)) return;
     const stMin = toMin(courseStartText(c, periods));
@@ -2044,15 +2193,15 @@ function tick() {
       if (!notified.has(key)) {
         notified.add(key);
         pushNotify('上课提醒 · ' + c.name,
-          periods[c.startPeriod - 1].start + ' 上课' + (c.room ? ' · ' + c.room : '') + (c.teacher ? ' · ' + c.teacher : ''), key);
-        save();
+          periods[c.startPeriod - 1].start + ' 上课' + (c.room ? ' · ' + c.room : '') + (c.teacher ? ' · ' + c.teacher : ''));
+        fired = true;
       }
     } else if (curMin >= stMin && curMin <= stMin + 5) {
       const key = tKey + ':' + c.id + ':start';
       if (!notified.has(key)) {
         notified.add(key);
-        pushNotify('开始上课 · ' + c.name, c.room ? '上课地点：' + c.room : '上课时间到', key);
-        save();
+        pushNotify('开始上课 · ' + c.name, c.room ? '上课地点：' + c.room : '上课时间到');
+        fired = true;
       }
     }
   });
@@ -2064,11 +2213,23 @@ function tick() {
       const key = tKey + ':' + a.id + ':act';
       if (!notified.has(key)) {
         notified.add(key);
-        pushNotify('活动提醒 · ' + a.title, (a.time ? a.time + ' ' : '') + (a.note || '即将开始'), key);
-        save();
+        pushNotify('活动提醒 · ' + a.title, (a.time ? a.time + ' ' : '') + (a.note || '即将开始'));
+        fired = true;
       }
     }
   });
+
+  if (fired) save();
+  pruneNotified();
+  scheduleNext();
+}
+
+/* 只保留今天的提醒记录，避免旧数据堆积，也让跨天重算干净 */
+function pruneNotified() {
+  const tKey = todayKey();
+  let ch = false;
+  notified.forEach(k => { if (!k.startsWith(tKey + ':')) { notified.delete(k); ch = true; } });
+  if (ch) save();
 }
 
 /* ============================================================
@@ -2099,6 +2260,7 @@ $('afSaveBtn').addEventListener('click', () => {
   if (editingActId) {
     const a = state.activities.find(x => x.id === editingActId);
     if (a) Object.assign(a, data);
+    if (a) clearActivityNotify(a); /* 改了活动时间/提醒，重新武装提醒 */
     toast('活动已更新');
   } else {
     state.activities.push(Object.assign({ id: uid(), done: false }, data));
@@ -2135,6 +2297,7 @@ $('actList').addEventListener('click', e => {
   if (del) {
     const a = state.activities.find(x => x.id === del.dataset.del);
     if (a && confirm('删除活动「' + a.title + '」？')) {
+      clearActivityNotify(a);
       state.activities = state.activities.filter(x => x.id !== del.dataset.del);
       render();
       toast('活动已删除');
@@ -2403,7 +2566,12 @@ function init() {
   applyTheme(theme);
   render();
   tick();
-  setInterval(tick, 30000);
+  setInterval(tick, 20000); // 兜底心跳（与精确掐点双保险）
+  // 切回标签页 / 窗口聚焦 / 页面恢复 / 网络恢复时立即补检，避免后台漏提醒
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(); });
+  window.addEventListener('focus', () => tick());
+  window.addEventListener('pageshow', () => tick());
+  window.addEventListener('online', () => tick());
 }
 document.addEventListener('DOMContentLoaded', init);
 </script>
